@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ARIA — Architecture Decision Record Agent</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 24px 16px; font-family: Georgia, serif; }
+  #root { width: 100%; max-width: 1000px; }
+  @keyframes pulse { 0%,100%{opacity:.3;transform:scale(.8)} 50%{opacity:1;transform:scale(1)} }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+  textarea:focus { border-color: #0D9488 !important; box-shadow: 0 0 0 2px rgba(13,148,136,0.15) !important; }
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect } = React;
+
+const NAVY  = "#1E2761";
+const TEAL  = "#0D9488";
+const AMBER = "#F59E0B";
+const ICE   = "#CADCFC";
+const SLATE = "#94A3B8";
+
+const SYSTEM_PROMPT = `You are ARIA (Architecture Rapid Intelligence Assistant), an AI agent built for the Architecture team. Your ONLY purpose is to help users produce Architecture Decision Records (ADRs). You do not answer general questions, provide opinions on unrelated topics, or engage in casual conversation.
+
+STRICT GUARDRAIL: If the user asks ANYTHING not related to producing an ADR or the document generation process, respond ONLY with: "I'm here to help you produce Architecture Decision Records for the Architecture team. Let's keep focused on your document — shall we continue?" Never answer off-topic queries even partially. Redirect immediately.
+
+YOUR ROLE: Guide the user through producing a complete ADR by asking smart targeted questions, conducting research relevant to the decision using your knowledge, and generating a fully populated ADR document.
+
+ADR FIELDS: Title, Date, Author, Status (default: Draft), Governance Forum, Recommended Decision, Issue or Problem Statement, Assumptions, Alternatives (each with name/description/pros/cons — flag recommended), Justification, Implications, Related Decisions or Artefacts, Review Date.
+
+CONVERSATION FLOW — one question at a time:
+1. Ask for the decision topic/title
+2. Ask for author and governance forum
+3. Ask for the issue or problem statement
+4. Ask for assumptions
+5. Ask for alternatives (at least 2, ideally 3) — description and which is recommended. If user asks you to research options, do so.
+6. Ask why they recommend that option (justification). If they ask you to write it, do so.
+7. Ask about implications. If they ask you to write it, do so.
+8. Ask about related decisions or artefacts
+9. Ask for review date (suggest 12 months from today if unsure)
+10. Confirm you have everything, then generate the document
+
+Enrich with relevant industry context. Clearly flag where you added context beyond what the user provided.
+
+CRITICAL OUTPUT INSTRUCTIONS:
+When generating the final ADR you MUST output the structured block below AND NOTHING ELSE before or after it except the research note. Do NOT include any conversational text, preamble, or explanation outside the block. The block must start on its own line with exactly ---ADR_START--- and end with exactly ---ADR_END---. Each field must be on its own line. Multi-line values must be written as a single continuous line with no line breaks within a field value.
+
+---ADR_START---
+TITLE: [value]
+DATE: [DD/MM/YYYY]
+AUTHOR: [value]
+STATUS: Draft
+GOVERNANCE_FORUM: [value]
+RECOMMENDED_DECISION: [value]
+ISSUE_OR_PROBLEM_STATEMENT: [value as single line]
+ASSUMPTIONS: [value as single line]
+ALTERNATIVES_COUNT: [number]
+ALT_1_NAME: [value]
+ALT_1_DESC: [value as single line]
+ALT_1_PROS: [value as single line]
+ALT_1_CONS: [value as single line]
+ALT_1_RECOMMENDED: [YES/NO]
+ALT_2_NAME: [value]
+ALT_2_DESC: [value as single line]
+ALT_2_PROS: [value as single line]
+ALT_2_CONS: [value as single line]
+ALT_2_RECOMMENDED: [YES/NO]
+ALT_3_NAME: [value]
+ALT_3_DESC: [value as single line]
+ALT_3_PROS: [value as single line]
+ALT_3_CONS: [value as single line]
+ALT_3_RECOMMENDED: [YES/NO]
+JUSTIFICATION: [value as single line]
+IMPLICATIONS: [value as single line]
+RELATED_DECISIONS: [value as single line]
+REVIEW_DATE: [DD/MM/YYYY]
+---ADR_END---
+
+ARIA_NOTE: [short note on where you added research beyond user input]
+
+Keep questions concise. One topic at a time. Professional and efficient.`;
+
+function parseADR(text) {
+  const s = text.indexOf("---ADR_START---");
+  const e = text.indexOf("---ADR_END---");
+  if (s === -1 || e === -1) return null;
+  const block = text.slice(s + 15, e);
+  const data = {};
+  // Parse line by line — key is everything before first colon, value is rest of line
+  block.split("\n").forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    const c = trimmed.indexOf(":");
+    if (c > -1) {
+      const key = trimmed.slice(0, c).trim();
+      const val = trimmed.slice(c + 1).trim();
+      if (key) data[key] = val;
+    }
+  });
+  // Extract ARIA_NOTE after ADR_END
+  const afterEnd = text.slice(e + 13).trim();
+  const noteMatch = afterEnd.match(/ARIA_NOTE:\s*([\s\S]*)/);
+  data._note = noteMatch ? noteMatch[1].trim() : afterEnd.replace(/^ARIA_NOTE:\s*/,"").trim();
+  return data;
+}
+
+function stripADRBlock(text) {
+  // Remove the entire ADR block and ARIA_NOTE line from display text
+  return text
+    .replace(/---ADR_START---[\s\S]*?---ADR_END---/g, "")
+    .replace(/ARIA_NOTE:[\s\S]*/g, "")
+    .trim();
+}
+
+function ADRDoc({ data }) {
+  const count = Math.min(parseInt(data.ALTERNATIVES_COUNT) || 2, 5);
+  const alts = [];
+  for (let i = 1; i <= count; i++) {
+    const name = data[`ALT_${i}_NAME`];
+    if (name) alts.push({
+      name, 
+      desc: data[`ALT_${i}_DESC`] || "",
+      pros: data[`ALT_${i}_PROS`] || "",
+      cons: data[`ALT_${i}_CONS`] || "",
+      rec:  data[`ALT_${i}_RECOMMENDED`] === "YES"
+    });
+  }
+
+  const keyCell = i => ({
+    padding:"9px 13px", fontSize:12, borderBottom:"1px solid #e2e8f0",
+    verticalAlign:"top", background: i%2===0 ? "#f8faff" : "#fff",
+    color: NAVY, fontWeight:700, width:"30%", whiteSpace:"nowrap"
+  });
+  const valCell = i => ({
+    padding:"9px 13px", fontSize:12, borderBottom:"1px solid #e2e8f0",
+    verticalAlign:"top", background: i%2===0 ? "#f8faff" : "#fff",
+    color:"#374151", lineHeight:1.75
+  });
+
+  const topRows = [
+    ["Title",                      data.TITLE || ""],
+    ["Date",                       data.DATE  || ""],
+    ["Author",                     data.AUTHOR || ""],
+    ["Status",                     data.STATUS || "Draft"],
+    ["Governance Forum",           data.GOVERNANCE_FORUM || ""],
+    ["Recommended Decision",       data.RECOMMENDED_DECISION || ""],
+    ["Issue / Problem Statement",  data.ISSUE_OR_PROBLEM_STATEMENT || ""],
+    ["Assumptions",                data.ASSUMPTIONS || ""],
+  ];
+  const botRows = [
+    ["Justification",                  data.JUSTIFICATION     || ""],
+    ["Implications",                   data.IMPLICATIONS      || ""],
+    ["Related Decisions / Artefacts",  data.RELATED_DECISIONS || ""],
+    ["Review Date",                    data.REVIEW_DATE       || ""],
+  ];
+
+  return (
+    <div style={{fontFamily:"Georgia,serif",fontSize:13}}>
+      {/* Header */}
+      <div style={{background:NAVY,color:"#fff",padding:"13px 16px",borderRadius:"8px 8px 0 0",display:"flex",alignItems:"center",gap:10}}>
+        <span style={{background:TEAL,borderRadius:4,padding:"3px 9px",fontSize:10,fontWeight:700,fontFamily:"monospace",letterSpacing:1}}>ADR</span>
+        <span style={{fontSize:14,fontWeight:700,flex:1}}>{data.TITLE || "Architecture Decision Record"}</span>
+        <span style={{background:"rgba(255,255,255,0.15)",borderRadius:4,padding:"2px 10px",fontSize:11}}>{data.STATUS || "Draft"}</span>
+      </div>
+
+      {/* Top fields */}
+      <table style={{width:"100%",borderCollapse:"collapse",border:"1px solid #e2e8f0",borderTop:"none"}}>
+        <tbody>
+          {topRows.map(([k,v],i) => (
+            <tr key={k}>
+              <td style={keyCell(i)}>{k}</td>
+              <td style={valCell(i)}>{v}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* Alternatives */}
+      <div style={{background:"#eef2ff",padding:"9px 14px",borderLeft:`4px solid ${NAVY}`,margin:"14px 0 8px",fontWeight:700,fontSize:13,color:NAVY}}>
+        Alternatives Considered
+      </div>
+      {alts.length === 0 && (
+        <div style={{padding:"10px 14px",fontSize:12,color:SLATE}}>No alternatives recorded.</div>
+      )}
+      {alts.map((a,i) => (
+        <div key={i} style={{border:`1.5px solid ${a.rec ? TEAL : "#e2e8f0"}`,borderRadius:8,marginBottom:10,overflow:"hidden",animation:"fadeIn 0.3s ease"}}>
+          <div style={{background: a.rec ? TEAL : "#e8ecf7",padding:"8px 14px",display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontWeight:700,fontSize:13,color: a.rec ? "#fff" : NAVY}}>{a.name}</span>
+            {a.rec && <span style={{background:"rgba(255,255,255,0.25)",borderRadius:3,padding:"2px 8px",fontSize:10,color:"#fff",fontFamily:"monospace",letterSpacing:0.5}}>✓ RECOMMENDED</span>}
+          </div>
+          <div style={{padding:"10px 14px",background:"#fff"}}>
+            {a.desc && <div style={{fontSize:12,color:"#374151",marginBottom:10,lineHeight:1.7,paddingBottom:8,borderBottom:"1px solid #f1f5f9"}}>{a.desc}</div>}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div style={{background:"#f0fdf4",borderRadius:6,padding:"8px 12px"}}>
+                <div style={{fontSize:10,fontWeight:700,color:"#166534",marginBottom:5,letterSpacing:0.5}}>✓ PROS</div>
+                <div style={{fontSize:12,color:"#374151",lineHeight:1.7}}>{a.pros}</div>
+              </div>
+              <div style={{background:"#fff7ed",borderRadius:6,padding:"8px 12px"}}>
+                <div style={{fontSize:10,fontWeight:700,color:"#92400e",marginBottom:5,letterSpacing:0.5}}>✗ CONS</div>
+                <div style={{fontSize:12,color:"#374151",lineHeight:1.7}}>{a.cons}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {/* Bottom fields */}
+      <table style={{width:"100%",borderCollapse:"collapse",border:"1px solid #e2e8f0",marginTop:4}}>
+        <tbody>
+          {botRows.map(([k,v],i) => (
+            <tr key={k}>
+              <td style={keyCell(i)}>{k}</td>
+              <td style={valCell(i)}>{v}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* Research note */}
+      {data._note && (
+        <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:7,padding:"11px 14px",marginTop:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#92400e",marginBottom:5,letterSpacing:0.3}}>⚠ ARIA Research Note — please review and validate</div>
+          <div style={{fontSize:12,color:"#78350f",lineHeight:1.75}}>{data._note}</div>
+        </div>
+      )}
+
+      {/* Print button */}
+      <div style={{marginTop:16,display:"flex",justifyContent:"flex-end"}}>
+        <button onClick={()=>window.print()} style={{background:NAVY,color:"#fff",border:"none",borderRadius:6,padding:"8px 20px",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+          Print / Save as PDF
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [msgs,    setMsgs]    = useState([]);
+  const [input,   setInput]   = useState("");
+  const [loading, setLoading] = useState(false);
+  const [adr,     setAdr]     = useState(null);
+  const [started, setStarted] = useState(false);
+  const bottomRef = useRef(null);
+  const inputRef  = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [msgs, loading]);
+
+  // ─── API KEY ───────────────────────────────────────────────────────────────
+  // Running inside Claude? Leave this as-is — no key needed.
+  // Running as a standalone HTML file in Chrome? Paste your Anthropic API key below.
+  // Get one free at console.anthropic.com — costs ~2p per ADR document produced.
+  const ANTHROPIC_API_KEY = "sk-ant-api03-nRS...3gAA"; // e.g. sk-ant-api03-...
+  // ──────────────────────────────────────────────────────────────────────────
+
+  async function callAPI(history) {
+    // Build headers — include API key only if one has been provided
+    const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
+    const keyProvided = ANTHROPIC_API_KEY && ANTHROPIC_API_KEY !== "PASTE_YOUR_API_KEY_HERE";
+    if (keyProvided) headers["x-api-key"] = ANTHROPIC_API_KEY;
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          system: SYSTEM_PROMPT,
+          messages: history.map(m => ({ role: m.role, content: m.content }))
+        })
+      });
+      const d = await res.json();
+      // Only show the API key message if we're standalone (no key provided) AND get an auth error
+      if (d.error?.type === "authentication_error" && !keyProvided) {
+        setMsgs(prev => [...prev.filter(m => !m.hidden), {
+          role: "assistant",
+          content: "API key required. Open this file in a text editor and paste your Anthropic API key where it says PASTE_YOUR_API_KEY_HERE. Get a free key at console.anthropic.com.",
+          displayText: "⚠ API key required. Open this file in a text editor and paste your Anthropic API key where it says PASTE_YOUR_API_KEY_HERE. Get a free key at console.anthropic.com."
+        }]);
+        setLoading(false);
+        return;
+      }
+      const reply = d.content?.map(b => b.text || "").join("") || "Something went wrong. Please try again.";
+
+      // Try to parse ADR from response
+      const parsed = parseADR(reply);
+      // Strip ADR block from displayed chat text
+      const displayText = parsed ? stripADRBlock(reply) : reply;
+
+      setMsgs(prev => [
+        ...prev.filter(m => !m.hidden),
+        { role: "assistant", content: reply, displayText, adr: parsed }
+      ]);
+      if (parsed) setAdr(parsed);
+
+    } catch (err) {
+      setMsgs(prev => [
+        ...prev.filter(m => !m.hidden),
+        { role: "assistant", content: "Connection error. Please check your internet connection and try again.", displayText: "Connection error. Please check your internet connection and try again." }
+      ]);
+    }
+    setLoading(false);
+    setTimeout(() => inputRef.current?.focus(), 100);
+  }
+
+  async function start() {
+    setStarted(true);
+    setLoading(true);
+    const init = [{ role: "user", content: "Hi, I need to create an Architecture Decision Record.", hidden: true }];
+    setMsgs(init);
+    await callAPI(init);
+  }
+
+  async function send() {
+    const t = input.trim();
+    if (!t || loading) return;
+    setInput("");
+    setLoading(true);
+    const updated = [...msgs.filter(m => !m.hidden), { role: "user", content: t, displayText: t }];
+    setMsgs(updated);
+    await callAPI(updated);
+  }
+
+  function reset() { setMsgs([]); setAdr(null); setStarted(false); setInput(""); }
+  function onKey(e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }
+
+  // Landing screen
+  if (!started) return (
+    <div style={{background:NAVY,borderRadius:14,padding:"64px 40px",display:"flex",flexDirection:"column",alignItems:"center",minHeight:500,justifyContent:"center",boxShadow:"0 24px 80px rgba(0,0,0,0.5)"}}>
+      <div style={{fontSize:64,fontWeight:900,color:"#fff",letterSpacing:18,fontFamily:"Georgia,serif",marginBottom:8}}>ARIA</div>
+      <div style={{fontSize:15,color:ICE,letterSpacing:1,marginBottom:6}}>Architecture Rapid Intelligence Assistant</div>
+      <div style={{fontSize:12,color:SLATE,marginBottom:44}}>Architecture Team</div>
+      <div style={{display:"flex",gap:14,marginBottom:48,flexWrap:"wrap",justifyContent:"center"}}>
+        {[["Context gathering",TEAL],["Dual research",AMBER],["ADR drafting",ICE]].map(([l,c])=>(
+          <div key={l} style={{background:"rgba(255,255,255,0.08)",borderRadius:20,padding:"7px 18px",fontSize:12,color:c,border:`1px solid ${c}33`}}>{l}</div>
+        ))}
+      </div>
+      <button onClick={start} style={{background:TEAL,color:"#fff",border:"none",borderRadius:30,padding:"15px 48px",fontSize:16,fontWeight:700,cursor:"pointer",fontFamily:"Georgia,serif",letterSpacing:0.5,boxShadow:"0 4px 24px rgba(13,148,136,0.45)"}}>
+        Create an AD
+      </button>
+      <div style={{marginTop:22,fontSize:12,color:SLATE,textAlign:"center",maxWidth:340,lineHeight:1.9}}>
+        Answer a few focused questions and ARIA will produce a fully populated Architecture Decision Record.
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",height:"88vh",minHeight:600,maxHeight:820,background:"#f4f6fb",borderRadius:14,overflow:"hidden",boxShadow:"0 24px 80px rgba(0,0,0,0.5)"}}>
+
+      {/* Header */}
+      <div style={{background:NAVY,padding:"11px 18px",display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
+        <span style={{fontSize:17,fontWeight:900,color:"#fff",letterSpacing:5,fontFamily:"Georgia,serif"}}>ARIA</span>
+        <span style={{fontSize:11,color:ICE}}>Architecture Rapid Intelligence Assistant · Architecture Team</span>
+        <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+          {adr && <span style={{background:TEAL,borderRadius:4,padding:"3px 10px",fontSize:10,color:"#fff",fontWeight:700,letterSpacing:0.5}}>ADR READY</span>}
+          <button onClick={reset} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:5,padding:"4px 12px",fontSize:10,color:SLATE,cursor:"pointer"}}>New</button>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div style={{display:"flex",flex:1,overflow:"hidden"}}>
+
+        {/* Chat panel */}
+        <div style={{flex: adr ? "0 0 40%" : "1", display:"flex", flexDirection:"column", borderRight: adr ? "1px solid #dde3f0" : "none", minWidth:0}}>
+          <div style={{flex:1,overflowY:"auto",padding:"16px 14px",display:"flex",flexDirection:"column",gap:11}}>
+            {msgs.filter(m => !m.hidden).map((m, i) => (
+              <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",alignItems:"flex-start",gap:8,animation:"fadeIn 0.25s ease"}}>
+                {m.role === "assistant" && (
+                  <div style={{width:26,height:26,borderRadius:"50%",background:NAVY,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:ICE,fontWeight:900,flexShrink:0,marginTop:2}}>A</div>
+                )}
+                <div style={{maxWidth:"84%",padding:"9px 13px",borderRadius:m.role==="user"?"14px 14px 4px 14px":"4px 14px 14px 14px",background:m.role==="user"?NAVY:"#fff",color:m.role==="user"?"#fff":"#1a1a2e",fontSize:13,lineHeight:1.7,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:m.role==="assistant"?"1px solid #e8ecf7":"none",wordBreak:"break-word",fontFamily:"Georgia,serif"}}>
+                  {m.role === "assistant" && m.adr
+                    ? <span style={{color:TEAL,fontWeight:700,fontSize:12}}>✓ Your ADR has been generated — see the document panel →</span>
+                    : <span style={{whiteSpace:"pre-wrap"}}>{m.displayText || m.content}</span>
+                  }
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <div style={{width:26,height:26,borderRadius:"50%",background:NAVY,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:ICE,fontWeight:900}}>A</div>
+                <div style={{background:"#fff",border:"1px solid #e8ecf7",borderRadius:"4px 14px 14px 14px",padding:"11px 15px",display:"flex",gap:5}}>
+                  {[0,1,2].map(i => <div key={i} style={{width:7,height:7,borderRadius:"50%",background:SLATE,animation:"pulse 1.2s ease-in-out infinite",animationDelay:`${i*0.2}s`}}/>)}
+                </div>
+              </div>
+            )}
+            <div ref={bottomRef}/>
+          </div>
+
+          {/* Input */}
+          <div style={{padding:"10px 14px",borderTop:"1px solid #dde3f0",background:"#fff",display:"flex",gap:9,flexShrink:0}}>
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={onKey}
+              placeholder="Type your response… (Enter to send)"
+              rows={2}
+              style={{flex:1,border:"1px solid #dde3f0",borderRadius:9,padding:"9px 13px",fontSize:13,fontFamily:"Georgia,serif",resize:"none",outline:"none",color:"#1a1a2e",background:"#f8f9fe",transition:"border-color 0.2s"}}
+            />
+            <button
+              onClick={send}
+              disabled={loading || !input.trim()}
+              style={{background:loading||!input.trim()?SLATE:TEAL,border:"none",borderRadius:9,padding:"0 18px",color:"#fff",fontSize:13,fontWeight:700,cursor:loading||!input.trim()?"default":"pointer",fontFamily:"Georgia,serif",transition:"background 0.2s"}}
+            >
+              Send
+            </button>
+          </div>
+        </div>
+
+        {/* Document panel */}
+        {adr && (
+          <div style={{flex:1,overflowY:"auto",padding:18,background:"#fff",minWidth:0,animation:"fadeIn 0.4s ease"}}>
+            <ADRDoc data={adr}/>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.render(<App/>, document.getElementById("root"));
+</script>
+</body>
+</html>
