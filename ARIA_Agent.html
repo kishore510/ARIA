@@ -7,13 +7,12 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+ 
 <style>
- @media print {
-  body { background: white !important; padding: 0 !important; }
-  #root > div > div:first-child { display: none !important; }
-  #root > div > div:last-child { flex: 1 !important; padding: 20px !important; box-shadow: none !important; }
-  #root > div { height: auto !important; box-shadow: none !important; border-radius: 0 !important; }
-  #root > div > div:first-child + div { border-radius: 0 !important; }
+@media print {
+  * { visibility: hidden; }
+  #doc-panel, #doc-panel * { visibility: visible; }
+  #doc-panel { position: absolute; left: 0; top: 0; width: 100%; padding: 20px; }
 }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0f172a; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 24px 16px; font-family: Georgia, serif; }
@@ -380,7 +379,7 @@ function App() {
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
 
         {/* Chat panel */}
-        <div style={{flex: adr ? "0 0 40%" : "1", display:"flex", flexDirection:"column", borderRight: adr ? "1px solid #dde3f0" : "none", minWidth:0}}>
+        <div id="chat-panel" style={{flex: adr ? "0 0 40%" : "1", display:"flex", flexDirection:"column", borderRight: adr ? "1px solid #dde3f0" : "none", minWidth:0}}>
           <div style={{flex:1,overflowY:"auto",padding:"16px 14px",display:"flex",flexDirection:"column",gap:11}}>
             {msgs.filter(m => !m.hidden).map((m, i) => (
               <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",alignItems:"flex-start",gap:8,animation:"fadeIn 0.25s ease"}}>
@@ -429,7 +428,7 @@ function App() {
 
         {/* Document panel */}
         {adr && (
-          <div style={{flex:1,overflowY:"auto",padding:18,background:"#fff",minWidth:0,animation:"fadeIn 0.4s ease"}}>
+          <div id="doc-panel" style={{flex:1,overflowY:"auto",padding:18,background:"#fff",minWidth:0,animation:"fadeIn 0.4s ease"}}>
             <ADRDoc data={adr}/>
           </div>
         )}
